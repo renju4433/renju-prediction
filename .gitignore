@@ -1,0 +1,5 @@
+artifacts/model_bundle.pkl
+artifacts/metrics.json
+__pycache__/
+*.pyc
+.vercel/

@@ -1,0 +1,10 @@
+artifacts/model_bundle.pkl
+artifacts/metrics.json
+__pycache__/
+*.pyc
+data_loader.py
+rating_engine.py
+train.py
+predict.py
+bench_features.py
+export_vercel_bundle.py
