@@ -169,9 +169,9 @@ class RenjuPredictor:
                 "h2h_draw_rate": round(h2h_draw_rate, 4),
             },
             "probabilities": {
-                "假先胜": round(float(probs[0]), 6),
-                "和棋": round(float(probs[1]), 6),
-                "假后胜": round(float(probs[2]), 6),
+                "tentative_first_win": round(float(probs[0]), 6),
+                "draw": round(float(probs[1]), 6),
+                "tentative_second_win": round(float(probs[2]), 6),
             },
         }
 

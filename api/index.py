@@ -18,7 +18,7 @@ BUNDLE_PATH = Path(__file__).resolve().parent.parent / "artifacts" / "vercel_bun
 
 app = FastAPI(
     title="Renju Outcome Predictor API",
-    description="Strictly causal Glicko-1 + H2H + LightGBM predictor for 假先胜 / 和棋 / 假后胜",
+    description="Strictly causal Glicko-1 + H2H + LightGBM predictor for tentative_first_win / draw / tentative_second_win",
     version="1.0.0",
 )
 
@@ -232,9 +232,9 @@ def _run_predict(ts: str, rule: Union[int, str], tf: Union[int, str], ts_p: Unio
             "h2h_draw_rate": round(h2h_draw, 4),
         },
         "probabilities": {
-            "假先胜": round(probs[0], 6),
-            "和棋": round(probs[1], 6),
-            "假后胜": round(probs[2], 6),
+            "tentative_first_win": round(probs[0], 6),
+            "draw": round(probs[1], 6),
+            "tentative_second_win": round(probs[2], 6),
         },
     }
 
