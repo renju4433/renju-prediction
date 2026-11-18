@@ -67,6 +67,68 @@ def apply_d4_board(board: np.ndarray, sym: int) -> np.ndarray:
     return b.copy()
 
 
+# Inverse of each D4 symmetry s in 0..7
+_D4_INV = [0, 3, 2, 1, 4, 5, 6, 7]
+
+
+def invert_d4_coord(x: int, y: int, sym: int) -> Tuple[int, int]:
+    """Invert apply_d4_coord(x, y, sym)."""
+    return apply_d4_coord(x, y, _D4_INV[sym])
+
+
+def _coord_rank(xy: Optional[Tuple[int, int]]) -> Tuple[int, int]:
+    """Canonical coordinate rank favoring the upper-right octant (h9, i9, ...)."""
+    if xy is None:
+        return (-1, -1)
+    x, y = xy
+    # Prefer y >= 7, x >= 7, and y >= x (so (7,8)=h9 and (8,8)=i9 rank first)
+    in_octant = 0 if (y >= 7 and x >= 7 and y >= x) else (1 if (y >= 7 and x >= 7) else 2)
+    return (in_octant, x * 15 + y)
+
+
+def canonicalize_d4(
+    board: np.ndarray,
+    last_move: Optional[Tuple[int, int]],
+    prev2_move: Optional[Tuple[int, int]],
+    target_move: Optional[Tuple[int, int]] = None,
+) -> Tuple[np.ndarray, Optional[Tuple[int, int]], Optional[Tuple[int, int]], Optional[Tuple[int, int]], int, int]:
+    """Canonicalize (board, last_move, prev2_move) under D4 symmetry.
+
+    If the board state has stabilizer symmetries (e.g. empty board, h8-only, or symmetric openings)
+    and `target_move` is provided, ties are broken to map symmetric target moves to one canonical
+    representative (e.g. all Direct-2 -> h9, all Indirect-2 -> i9).
+
+    Returns:
+        (canon_board, canon_last, canon_prev2, canon_target, chosen_sym, stabilizer_size)
+    """
+    best_board_key = None
+    candidates = []
+
+    for sym in range(8):
+        b_s = apply_d4_board(board, sym)
+        lm_s = apply_d4_coord(last_move[0], last_move[1], sym) if last_move is not None else None
+        p2_s = apply_d4_coord(prev2_move[0], prev2_move[1], sym) if prev2_move is not None else None
+        b_key = (b_s.tobytes(), lm_s, p2_s)
+        if best_board_key is None or b_key < best_board_key:
+            best_board_key = b_key
+            candidates = [(sym, b_s, lm_s, p2_s)]
+        elif b_key == best_board_key:
+            candidates.append((sym, b_s, lm_s, p2_s))
+
+    stabilizer_size = len(candidates)
+    if target_move is not None and stabilizer_size > 1:
+        best_cand = min(
+            candidates,
+            key=lambda c: _coord_rank(apply_d4_coord(target_move[0], target_move[1], c[0])),
+        )
+    else:
+        best_cand = candidates[0]
+
+    sym, b_s, lm_s, p2_s = best_cand
+    t_s = apply_d4_coord(target_move[0], target_move[1], sym) if target_move is not None else None
+    return b_s, lm_s, p2_s, t_s, sym, stabilizer_size
+
+
 def is_renju_rule(rule_id: int) -> bool:
     return rule_id not in GOMOKU_RULE_IDS
 

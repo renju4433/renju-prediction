@@ -21,7 +21,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nn.features import build_input_planes, coord_to_str, parse_coord, tf_current_color_at_move
+from nn.features import (
+    build_input_planes,
+    canonicalize_d4,
+    coord_to_str,
+    invert_d4_coord,
+    parse_coord,
+    tf_current_color_at_move,
+)
 from nn.model import RenjuDualNet
 
 DEFAULT_NN_CKPT = ROOT / "artifacts" / "renju_dualnet.pt"
@@ -197,14 +204,16 @@ class RenjuDualPredictor:
         last_m = parsed[-1] if move_idx >= 1 else None
         prev2_m = parsed[-2] if move_idx >= 2 else None
 
+        cb, clm, cp2, _, csym, _ = canonicalize_d4(board, last_m, prev2_m)
+
         planes, legal = build_input_planes(
-            board=board,
+            board=cb,
             next_color=next_color,
             tf_current_color=tf_cur,
             rule_id=rule_id,
             move_idx=move_idx,
-            last_move=last_m,
-            prev2_move=prev2_m,
+            last_move=clm,
+            prev2_move=cp2,
             tf_rating=tf_r,
             ts_rating=ts_r,
             tf_rd=tf_rd,
@@ -231,14 +240,16 @@ class RenjuDualPredictor:
         v_probs = F.softmax(v_logits, dim=1)[0].numpy()
 
         top_indices = np.argsort(-p_probs)[:top_k]
-        top_moves = [
-            {
-                "move": coord_to_str(int(idx % 15), int(idx // 15)),
-                "prob": round(float(p_probs[idx]), 6),
-            }
-            for idx in top_indices
-            if legal[idx]
-        ]
+        top_moves = []
+        for idx in top_indices:
+            if legal[idx]:
+                ox, oy = invert_d4_coord(int(idx % 15), int(idx // 15), csym)
+                top_moves.append(
+                    {
+                        "move": coord_to_str(ox, oy),
+                        "prob": round(float(p_probs[idx]), 6),
+                    }
+                )
 
         return {
             "timestamp": date_str,

@@ -24,9 +24,8 @@ if str(ROOT) not in sys.path:
 
 from data_loader import DEFAULT_RIF_PATH, load_rif
 from nn.features import (
-    apply_d4_board,
-    apply_d4_coord,
     build_input_planes,
+    canonicalize_d4,
     parse_coord,
     tf_current_color_at_move,
 )
@@ -67,10 +66,10 @@ def extract_game_moves(rif_path: str = DEFAULT_RIF_PATH) -> Dict[int, List[Tuple
 class RenjuPositionDataset(Dataset):
     """Memory-efficient dataset storing compact board states + causal player scalars + player IDs."""
 
-    def __init__(self, samples: list, id_dropout: float = 0.0, augment_d4: bool = False) -> None:
+    def __init__(self, samples: list, id_dropout: float = 0.0, canonical_d4: bool = True) -> None:
         self.samples = samples
         self.id_dropout = id_dropout
-        self.augment_d4 = augment_d4
+        self.canonical_d4 = canonical_d4
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -97,16 +96,12 @@ class RenjuPositionDataset(Dataset):
             value_label,
         ) = self.samples[idx]
 
-        if self.augment_d4:
-            sym = random.randint(0, 7)
-            if sym != 0:
-                board = apply_d4_board(board, sym)
-                if last_move is not None:
-                    last_move = apply_d4_coord(last_move[0], last_move[1], sym)
-                if prev2_move is not None:
-                    prev2_move = apply_d4_coord(prev2_move[0], prev2_move[1], sym)
-                tx, ty = apply_d4_coord(target_move_idx % 15, target_move_idx // 15, sym)
-                target_move_idx = ty * 15 + tx
+        if self.canonical_d4:
+            tx, ty = target_move_idx % 15, target_move_idx // 15
+            board, last_move, prev2_move, t_s, _, _ = canonicalize_d4(
+                board, last_move, prev2_move, (tx, ty)
+            )
+            target_move_idx = t_s[1] * 15 + t_s[0]
 
         if self.id_dropout > 0.0:
             if random.random() < self.id_dropout:
@@ -333,8 +328,8 @@ def main() -> None:
         flush=True,
     )
 
-    train_ds = RenjuPositionDataset(train_pos, id_dropout=0.10, augment_d4=True)
-    test_ds = RenjuPositionDataset(test_pos, id_dropout=0.0, augment_d4=False)
+    train_ds = RenjuPositionDataset(train_pos, id_dropout=0.10, canonical_d4=True)
+    test_ds = RenjuPositionDataset(test_pos, id_dropout=0.0, canonical_d4=True)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
