@@ -1,4 +1,4 @@
-"""Export RenjuDualNet checkpoint to lightweight ONNX for Vercel deployment."""
+"""Export RenjuDualNet (with Player Embeddings + FiLM) checkpoint to ONNX."""
 
 from __future__ import annotations
 
@@ -23,19 +23,26 @@ def main() -> None:
     net = RenjuDualNet(
         channels=ckpt.get("channels", 96),
         num_blocks=ckpt.get("num_blocks", 8),
+        player_vocab_size=ckpt.get("player_vocab_size", 1),
+        player_emb_dim=ckpt.get("player_emb_dim", 16),
     )
     net.load_state_dict(ckpt["model_state"])
     net.eval()
 
-    dummy = torch.randn(1, NUM_INPUT_PLANES, 15, 15, dtype=torch.float32)
+    dummy_x = torch.randn(1, NUM_INPUT_PLANES, 15, 15, dtype=torch.float32)
+    dummy_m = torch.zeros(1, dtype=torch.long)
+    dummy_o = torch.zeros(1, dtype=torch.long)
+
     torch.onnx.export(
         net,
-        dummy,
+        (dummy_x, dummy_m, dummy_o),
         str(onnx_path),
-        input_names=["input"],
+        input_names=["input", "mover_id", "opp_id"],
         output_names=["policy_logits", "value_logits"],
         dynamic_axes={
             "input": {0: "batch"},
+            "mover_id": {0: "batch"},
+            "opp_id": {0: "batch"},
             "policy_logits": {0: "batch"},
             "value_logits": {0: "batch"},
         },

@@ -25,6 +25,7 @@ from nn.features import build_input_planes, coord_to_str, parse_coord, tf_curren
 
 BUNDLE_PATH = ROOT_DIR / "artifacts" / "vercel_bundle.json.gz"
 ONNX_PATH = ROOT_DIR / "artifacts" / "renju_dualnet.onnx"
+VOCAB_PATH = ROOT_DIR / "artifacts" / "player_vocab.json"
 
 app = FastAPI(
     title="Renju Outcome Predictor API",
@@ -34,6 +35,18 @@ app = FastAPI(
 
 _STATE: Optional[Dict[str, Any]] = None
 _ONNX_SESSION: Optional[ort.InferenceSession] = None
+_PLAYER_VOCAB: Optional[Dict[int, int]] = None
+
+
+def _get_player_vocab() -> Dict[int, int]:
+    global _PLAYER_VOCAB
+    if _PLAYER_VOCAB is None:
+        if VOCAB_PATH.exists():
+            with open(VOCAB_PATH, "r", encoding="utf-8") as f:
+                _PLAYER_VOCAB = {int(k): int(v) for k, v in json.load(f).items()}
+        else:
+            _PLAYER_VOCAB = {}
+    return _PLAYER_VOCAB
 
 
 def _get_onnx_session() -> ort.InferenceSession:
@@ -349,8 +362,23 @@ def _run_predict_board(
         h2h_draw_rate=h2h_dr,
     )
 
+    p_vocab = _get_player_vocab()
+    tf_vid = p_vocab.get(tf_id, 0)
+    ts_vid = p_vocab.get(ts_id, 0)
+    if next_color == tf_cur:
+        mover_vid, opp_vid = tf_vid, ts_vid
+    else:
+        mover_vid, opp_vid = ts_vid, tf_vid
+
     sess = _get_onnx_session()
-    p_logits, v_logits = sess.run(None, {"input": planes[None, ...]})
+    p_logits, v_logits = sess.run(
+        None,
+        {
+            "input": planes[None, ...],
+            "mover_id": np.array([mover_vid], dtype=np.int64),
+            "opp_id": np.array([opp_vid], dtype=np.int64),
+        },
+    )
     p_logits = p_logits[0]
     p_logits = np.where(legal, p_logits, -1e9)
     p_max = float(np.max(p_logits))

@@ -58,10 +58,19 @@ class RenjuDualPredictor:
         self.net = RenjuDualNet(
             channels=ckpt.get("channels", 96),
             num_blocks=ckpt.get("num_blocks", 8),
+            player_vocab_size=ckpt.get("player_vocab_size", 1),
+            player_emb_dim=ckpt.get("player_emb_dim", 16),
         )
         self.net.load_state_dict(ckpt["model_state"])
         self.net.eval()
         self.nn_metrics = ckpt.get("metrics", {})
+
+        vocab_path = ROOT / "artifacts" / "player_vocab.json"
+        if vocab_path.exists():
+            with open(vocab_path, "r", encoding="utf-8") as f:
+                self.player_vocab: Dict[int, int] = {int(k): int(v) for k, v in json.load(f).items()}
+        else:
+            self.player_vocab = {}
 
     @staticmethod
     def _normalize_timestamp(ts: str) -> str:
@@ -205,9 +214,18 @@ class RenjuDualPredictor:
             h2h_draw_rate=h2h_dr,
         )
 
+        tf_vid = self.player_vocab.get(tf_id, 0)
+        ts_vid = self.player_vocab.get(ts_id, 0)
+        if next_color == tf_cur:
+            mover_vid, opp_vid = tf_vid, ts_vid
+        else:
+            mover_vid, opp_vid = ts_vid, tf_vid
+
         x_t = torch.from_numpy(planes).unsqueeze(0)
+        m_t = torch.tensor([mover_vid], dtype=torch.long)
+        o_t = torch.tensor([opp_vid], dtype=torch.long)
         legal_t = torch.from_numpy(legal).unsqueeze(0)
-        p_logits, v_logits = self.net(x_t)
+        p_logits, v_logits = self.net(x_t, m_t, o_t)
         p_logits = p_logits.masked_fill(~legal_t, -1e9)
         p_probs = F.softmax(p_logits, dim=1)[0].numpy()
         v_probs = F.softmax(v_logits, dim=1)[0].numpy()
