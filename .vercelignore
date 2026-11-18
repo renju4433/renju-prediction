@@ -1,7 +1,17 @@
 artifacts/model_bundle.pkl
 artifacts/metrics.json
+artifacts/renju_dualnet.pt
+artifacts/renju_dualnet_latest.pt
 __pycache__/
 *.pyc
+nn/__pycache__/
+nn/cpp/
+nn/forbidden.dll
+nn/forbidden.lib
+nn/forbidden.exp
+nn/train_nn.py
+nn/export_onnx.py
+nn/predict_nn.py
 data_loader.py
 rating_engine.py
 train.py

@@ -1,5 +1,11 @@
 artifacts/model_bundle.pkl
 artifacts/metrics.json
+artifacts/renju_dualnet.pt
+artifacts/renju_dualnet_latest.pt
 __pycache__/
 *.pyc
 .vercel/
+nn/__pycache__/
+nn/forbidden.dll
+nn/forbidden.lib
+nn/forbidden.exp

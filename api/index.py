@@ -6,23 +6,43 @@ import gzip
 import json
 import math
 import re
+import sys
 from bisect import bisect_left
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
+import onnxruntime as ort
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-BUNDLE_PATH = Path(__file__).resolve().parent.parent / "artifacts" / "vercel_bundle.json.gz"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from nn.features import build_input_planes, coord_to_str, parse_coord, tf_current_color_at_move
+
+BUNDLE_PATH = ROOT_DIR / "artifacts" / "vercel_bundle.json.gz"
+ONNX_PATH = ROOT_DIR / "artifacts" / "renju_dualnet.onnx"
 
 app = FastAPI(
     title="Renju Outcome Predictor API",
-    description="Strictly causal Glicko-1 + H2H + LightGBM predictor for tf_win / draw / ts_win",
-    version="1.0.0",
+    description="Strictly causal Glicko-1 + H2H + LightGBM & DualNet (Policy + Value) predictor",
+    version="2.0.0",
 )
 
 _STATE: Optional[Dict[str, Any]] = None
+_ONNX_SESSION: Optional[ort.InferenceSession] = None
+
+
+def _get_onnx_session() -> ort.InferenceSession:
+    global _ONNX_SESSION
+    if _ONNX_SESSION is None:
+        if not ONNX_PATH.exists():
+            raise HTTPException(status_code=503, detail="Neural network ONNX model not found.")
+        _ONNX_SESSION = ort.InferenceSession(str(ONNX_PATH), providers=["CPUExecutionProvider"])
+    return _ONNX_SESSION
 
 
 def _load_state() -> Dict[str, Any]:
@@ -246,6 +266,140 @@ class PredictRequest(BaseModel):
     ts: Union[int, str]
 
 
+class PredictBoardRequest(BaseModel):
+    time: str
+    rule: Union[int, str]
+    tf: Union[int, str]
+    ts: Union[int, str]
+    moves: Union[str, List[str]] = ""
+    tf_color: Optional[Union[int, str]] = None
+    swap: str = ""
+    top_k: int = 5
+
+
+def _run_predict_board(
+    ts: str,
+    rule: Union[int, str],
+    tf: Union[int, str],
+    ts_p: Union[int, str],
+    moves: Union[str, List[str]] = "",
+    tf_color: Optional[Union[int, str]] = None,
+    swap: str = "",
+    top_k: int = 5,
+) -> dict:
+    state = _load_state()
+    date_str = _normalize_timestamp(ts)
+    rule_id = _resolve_rule(state, rule)
+    tf_id = _resolve_player(state, tf)
+    ts_id = _resolve_player(state, ts_p)
+
+    hist = state["history"]
+    tf_r, tf_rd = _get_rating_and_rd(hist, tf_id, date_str)
+    ts_r, ts_rd = _get_rating_and_rd(hist, ts_id, date_str)
+    h2h_g, h2h_sr, h2h_dr = _get_h2h(hist, tf_id, ts_id, date_str)
+
+    if isinstance(moves, str):
+        move_tokens = [m for m in re.split(r"[\s,]+", moves.strip()) if m]
+    else:
+        move_tokens = [str(m).strip() for m in moves if str(m).strip()]
+
+    board = np.zeros((15, 15), dtype=np.int8)
+    parsed: List[Tuple[int, int]] = []
+    for idx, tok in enumerate(move_tokens):
+        xy = parse_coord(tok)
+        if xy is None:
+            raise HTTPException(status_code=400, detail=f"Invalid move coordinate: '{tok}'")
+        x, y = xy
+        if board[y, x] != 0:
+            raise HTTPException(status_code=400, detail=f"Duplicate stone at '{tok}'")
+        board[y, x] = 1 if (idx % 2 == 0) else 2
+        parsed.append((x, y))
+
+    move_idx = len(parsed)
+    next_color = 1 if (move_idx % 2 == 0) else 2
+
+    if tf_color is not None and str(tf_color).strip() != "":
+        c_str = str(tf_color).strip().lower()
+        if c_str in ("1", "b", "black", "黑"):
+            tf_cur = 1
+        elif c_str in ("2", "w", "white", "白"):
+            tf_cur = 2
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid tf_color: '{tf_color}'")
+    else:
+        tf_cur = tf_current_color_at_move(rule_id, swap, move_idx)
+
+    last_m = parsed[-1] if move_idx >= 1 else None
+    prev2_m = parsed[-2] if move_idx >= 2 else None
+
+    planes, legal = build_input_planes(
+        board=board,
+        next_color=next_color,
+        tf_current_color=tf_cur,
+        rule_id=rule_id,
+        move_idx=move_idx,
+        last_move=last_m,
+        prev2_move=prev2_m,
+        tf_rating=tf_r,
+        ts_rating=ts_r,
+        tf_rd=tf_rd,
+        ts_rd=ts_rd,
+        h2h_games=h2h_g,
+        h2h_score_rate=h2h_sr,
+        h2h_draw_rate=h2h_dr,
+    )
+
+    sess = _get_onnx_session()
+    p_logits, v_logits = sess.run(None, {"input": planes[None, ...]})
+    p_logits = p_logits[0]
+    p_logits = np.where(legal, p_logits, -1e9)
+    p_max = float(np.max(p_logits))
+    p_exp = np.exp(p_logits - p_max)
+    p_probs = p_exp / float(np.sum(p_exp))
+
+    v_raw = v_logits[0]
+    v_max = float(np.max(v_raw))
+    v_exp = np.exp(v_raw - v_max)
+    v_probs = v_exp / float(np.sum(v_exp))
+
+    k = max(1, min(int(top_k), 25))
+    top_indices = np.argsort(-p_probs)[:k]
+    policy_top = [
+        {
+            "move": coord_to_str(int(idx % 15), int(idx // 15)),
+            "prob": round(float(p_probs[idx]), 6),
+        }
+        for idx in top_indices
+        if legal[idx]
+    ]
+
+    return {
+        "timestamp": date_str,
+        "rule": {"id": rule_id, "name": state["rules"][rule_id]},
+        "move_count": move_idx,
+        "next_to_move": "black" if next_color == 1 else "white",
+        "tf_current_color": "black" if tf_cur == 1 else "white",
+        "tentative_first": {
+            "id": tf_id,
+            "name": state["players"][tf_id]["n"],
+            "rating": round(tf_r, 2),
+            "rd": round(tf_rd, 2),
+        },
+        "tentative_second": {
+            "id": ts_id,
+            "name": state["players"][ts_id]["n"],
+            "rating": round(ts_r, 2),
+            "rd": round(ts_rd, 2),
+        },
+        "policy_top_moves": policy_top,
+        "value": {
+            "tf_win": round(float(v_probs[0]), 6),
+            "draw": round(float(v_probs[1]), 6),
+            "ts_win": round(float(v_probs[2]), 6),
+        },
+    }
+
+
 @app.get("/")
 @app.get("/health")
 def health() -> dict:
@@ -296,3 +450,31 @@ def predict_get(
 @app.post("/predict")
 def predict_post(req: PredictRequest) -> dict:
     return _run_predict(req.time, req.rule, req.tf, req.ts)
+
+
+@app.get("/predict_board")
+def predict_board_get(
+    time: str = Query(..., description="Timestamp YYYY-MM-DD"),
+    rule: str = Query(..., description="Rule ID or name"),
+    tf: str = Query(..., description="Tentative first player ID or name"),
+    ts: str = Query(..., description="Tentative second player ID or name"),
+    moves: str = Query("", description="Space or comma-separated moves, e.g. 'h8 i9 i8'"),
+    tf_color: Optional[str] = Query(None, description="Current color of 假先: black or white"),
+    swap: str = Query("", description="Optional swap sequence if tf_color omitted"),
+    top_k: int = Query(5, ge=1, le=25, description="Top-K policy moves"),
+) -> dict:
+    return _run_predict_board(time, rule, tf, ts, moves=moves, tf_color=tf_color, swap=swap, top_k=top_k)
+
+
+@app.post("/predict_board")
+def predict_board_post(req: PredictBoardRequest) -> dict:
+    return _run_predict_board(
+        req.time,
+        req.rule,
+        req.tf,
+        req.ts,
+        moves=req.moves,
+        tf_color=req.tf_color,
+        swap=req.swap,
+        top_k=req.top_k,
+    )
