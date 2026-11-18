@@ -125,13 +125,18 @@ def build_position_samples(
     train_pos = []
     test_pos = []
 
-    # Separate games chronologically
-    train_games = [s for s in labeled_samples if s[0].date < cutoff_date and s[0].game_id in game_moves]
-    test_games = [s for s in labeled_samples if s[0].date >= cutoff_date and s[0].game_id in game_moves]
-
-    # Sample recent + diverse training games if needed
-    rng.shuffle(train_games)
-    rng.shuffle(test_games)
+    # Separate games chronologically (or use 5% held-out val when cutoff covers all dates)
+    if cutoff_date >= "2026-11-17":
+        all_games = [s for s in labeled_samples if s[0].game_id in game_moves]
+        rng.shuffle(all_games)
+        n_val = max(1000, int(len(all_games) * 0.05))
+        test_games = all_games[:n_val]
+        train_games = all_games[n_val:]
+    else:
+        train_games = [s for s in labeled_samples if s[0].date < cutoff_date and s[0].game_id in game_moves]
+        test_games = [s for s in labeled_samples if s[0].date >= cutoff_date and s[0].game_id in game_moves]
+        rng.shuffle(train_games)
+        rng.shuffle(test_games)
 
     def collect(games_subset, max_total: int):
         out = []
@@ -247,6 +252,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=512, help="Batch size")
     parser.add_argument("--train-samples", type=int, default=300000, help="Max train positions")
     parser.add_argument("--test-samples", type=int, default=30000, help="Max test positions")
+    parser.add_argument("--cutoff", type=str, default="2024-01-01", help="Date cutoff; use 2026-11-17 to include all 2024-2026 data")
     parser.add_argument("--no-resume", action="store_true", help="Start fresh instead of resuming latest checkpoint")
     args = parser.parse_args()
 
@@ -260,9 +266,13 @@ def main() -> None:
     print(f"Loaded {len(game_moves)} games with full moves in {time.time() - t0:.1f}s.", flush=True)
 
     train_pos, test_pos = build_position_samples(
-        labeled, game_moves, max_train_samples=args.train_samples, max_test_samples=args.test_samples
+        labeled,
+        game_moves,
+        max_train_samples=args.train_samples,
+        max_test_samples=args.test_samples,
+        cutoff_date=args.cutoff,
     )
-    print(f"Built {len(train_pos)} train positions (<2024) and {len(test_pos)} test positions (>=2024).", flush=True)
+    print(f"Built {len(train_pos)} train positions and {len(test_pos)} val/test positions (cutoff={args.cutoff}).", flush=True)
 
     train_ds = RenjuPositionDataset(train_pos)
     test_ds = RenjuPositionDataset(test_pos)
