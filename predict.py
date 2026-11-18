@@ -169,9 +169,9 @@ class RenjuPredictor:
                 "h2h_draw_rate": round(h2h_draw_rate, 4),
             },
             "probabilities": {
-                "tf_win_prob": round(float(probs[0]), 6),
-                "draw_prob": round(float(probs[1]), 6),
-                "ts_win_prob": round(float(probs[2]), 6),
+                "tf_win": round(float(probs[0]), 6),
+                "draw": round(float(probs[1]), 6),
+                "ts_win": round(float(probs[2]), 6),
             },
         }
 
