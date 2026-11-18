@@ -40,6 +40,33 @@ def coord_to_str(x: int, y: int) -> str:
     return f"{chr(ord('a') + x)}{y + 1}"
 
 
+def apply_d4_coord(x: int, y: int, sym: int) -> Tuple[int, int]:
+    """Apply one of 8 D4 dihedral symmetries (0..7) to 15x15 coordinate (x, y)."""
+    if sym & 4:
+        x, y = y, x
+    rot = sym & 3
+    if rot == 1:
+        return 14 - y, x
+    if rot == 2:
+        return 14 - x, 14 - y
+    if rot == 3:
+        return y, 14 - x
+    return x, y
+
+
+def apply_d4_board(board: np.ndarray, sym: int) -> np.ndarray:
+    """Apply the same D4 symmetry (0..7) to a (15, 15) board array."""
+    b = board.T if (sym & 4) else board
+    rot = sym & 3
+    if rot == 1:
+        return np.rot90(b, k=3)
+    if rot == 2:
+        return np.rot90(b, k=2)
+    if rot == 3:
+        return np.rot90(b, k=1)
+    return b.copy()
+
+
 def is_renju_rule(rule_id: int) -> bool:
     return rule_id not in GOMOKU_RULE_IDS
 
