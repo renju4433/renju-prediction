@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from lxml import etree
 
 
-DEFAULT_RIF_PATH = r"c:\Users\yaolz\Downloads\renjunet_v10_20261116.rif"
+# RenjuNet database snapshot used for training. Override with RIF_PATH if needed.
+DEFAULT_RIF_PATH = os.environ.get(
+    "RIF_PATH", r"c:\Users\yaolz\Downloads\renjunet_v10_20261120.rif"
+)
 
 
 @dataclass(frozen=True)

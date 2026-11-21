@@ -247,6 +247,8 @@ def _run_predict(ts: str, rule: Union[int, str], tf: Union[int, str], ts_p: Unio
 
     return {
         "timestamp": date_str,
+        "source": "prematch",
+        "model": "lightgbm",
         "rule": {"id": rule_id, "name": state["rules"][rule_id]},
         "tentative_first": {
             "id": tf_id,
@@ -322,6 +324,54 @@ def _run_predict_board(
         move_tokens = [m for m in re.split(r"[\s,]+", moves.strip()) if m]
     else:
         move_tokens = [str(m).strip() for m in moves if str(m).strip()]
+
+    # No position on the board yet: there is nothing for the policy/value net to read,
+    # so fall back to the pre-match (赛前) LightGBM win-rate model.
+    if not move_tokens:
+        rule_cat_idx = state["rule_cat_to_idx"].get(rule_id, -1)
+        x = (rule_cat_idx, tf_r, ts_r, tf_r - ts_r, tf_rd, ts_rd, h2h_g, h2h_sr, h2h_dr)
+        probs = _predict_probs(state["trees_by_class"], x)
+        value = {
+            "tf_win": round(float(probs[0]), 6),
+            "draw": round(float(probs[1]), 6),
+            "ts_win": round(float(probs[2]), 6),
+        }
+        return {
+            "timestamp": date_str,
+            "source": "prematch",
+            "model": "lightgbm",
+            "board_empty": True,
+            "note": "空棋盘，暂无局面：已改用赛前胜率预测（等级分 + 交手记录）。",
+            "rule": {"id": rule_id, "name": state["rules"][rule_id]},
+            "move_count": 0,
+            "next_to_move": "black",
+            "policy_top_moves": [],
+            "tentative_first": {
+                "id": tf_id,
+                "name": state["players"][tf_id]["n"],
+                "rating": round(tf_r, 2),
+                "rd": round(tf_rd, 2),
+            },
+            "tentative_second": {
+                "id": ts_id,
+                "name": state["players"][ts_id]["n"],
+                "rating": round(ts_r, 2),
+                "rd": round(ts_rd, 2),
+            },
+            "features": {
+                "rule": rule_id,
+                "tf_rating": round(tf_r, 2),
+                "ts_rating": round(ts_r, 2),
+                "rating_diff": round(tf_r - ts_r, 2),
+                "tf_rd": round(tf_rd, 2),
+                "ts_rd": round(ts_rd, 2),
+                "h2h_games": h2h_g,
+                "h2h_score_rate": round(h2h_sr, 4),
+                "h2h_draw_rate": round(h2h_dr, 4),
+            },
+            "prematch": dict(value),
+            "value": value,
+        }
 
     board = np.zeros((15, 15), dtype=np.int8)
     parsed: List[Tuple[int, int]] = []
@@ -414,6 +464,8 @@ def _run_predict_board(
 
     return {
         "timestamp": date_str,
+        "source": "dualnet",
+        "board_empty": False,
         "rule": {"id": rule_id, "name": state["rules"][rule_id]},
         "move_count": move_idx,
         "next_to_move": "black" if next_color == 1 else "white",
