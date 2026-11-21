@@ -322,6 +322,7 @@ def _run_predict(
         "next_to_move": "black" if next_color == 1 else "white",
         "tf_current_color": "black" if tf_cur == 1 else "white",
         "swap_available": bool(is_swap_allowed(move_idx)),
+        "swap_prob": round(float(p_probs[SWAP_ACTION]), 6) if legal[SWAP_ACTION] else None,
         "tentative_first": {
             "id": tf_id,
             "name": state["players"][tf_id]["n"],
