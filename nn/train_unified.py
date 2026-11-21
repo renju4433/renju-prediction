@@ -318,6 +318,10 @@ def main() -> None:
 
     train_games = [s for s in labeled if s[0].date < args.cutoff]
     test_games = [s for s in labeled if s[0].date >= args.cutoff]
+    # Sampling order matters: the sample cap would otherwise be filled by the oldest
+    # games (which rarely record swap decisions). Shuffle so every era is covered.
+    random.Random(42).shuffle(train_games)
+    random.Random(7).shuffle(test_games)
     vocab = build_player_vocab(train_games, min_games=args.min_player_games)
     vocab_size = len(vocab) + 1
 
