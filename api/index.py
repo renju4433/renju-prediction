@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from nn.features import (
+    NUM_BOARD_ACTIONS,
     SWAP_ACTION,
     build_input_planes,
     canonicalize_d4,
@@ -36,6 +37,7 @@ from nn.features import (
     parse_coord,
     tf_current_color_at_move,
 )
+from nn.forbidden import _is_five, _is_overline, get_forbidden_map
 
 BUNDLE_PATH = ROOT_DIR / "artifacts" / "vercel_bundle.json.gz"
 ONNX_PATH = ROOT_DIR / "artifacts" / "renju_unified.onnx"
@@ -196,6 +198,30 @@ def _get_h2h(hist: dict, tf_id: int, ts_id: int, ts: str) -> Tuple[int, float, f
     return n_h2h, (tf_pts + 1.0) / (n_h2h + 2.0), (draws + 0.16) / (n_h2h + 2.0)
 
 
+def _black_overline_point(board: np.ndarray, x: int, y: int) -> bool:
+    """True when a black stone at (x, y) would be an overline (6+) without also making a five."""
+    test = board.copy()
+    test[y, x] = 1
+    return bool(_is_overline(test, x, y)) and not bool(_is_five(test, x, y, 1))
+
+
+def _white_line_through(board: np.ndarray, x: int, y: int) -> int:
+    """Longest white run through (x, y) if white played there."""
+    test = board.copy()
+    test[y, x] = 2
+    best = 0
+    for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        cnt = 1
+        for sign in (1, -1):
+            cx, cy = x + sign * dx, y + sign * dy
+            while 0 <= cx < 15 and 0 <= cy < 15 and test[cy, cx] == 2:
+                cnt += 1
+                cx += sign * dx
+                cy += sign * dy
+        best = max(best, cnt)
+    return best
+
+
 def _parse_moves(moves: Union[str, List[str]]) -> List[Tuple[int, int]]:
     if isinstance(moves, str):
         tokens = [m for m in re.split(r"[\s,]+", moves.strip()) if m]
@@ -294,9 +320,58 @@ def _run_predict(
     p_exp = np.exp(p_logits - float(np.max(p_logits)))
     p_probs = p_exp / float(np.sum(p_exp))
 
+    # White must not spend a stone on a point where Black would be committing an overline
+    # (长连, forbidden). Such "blocks" are wasted moves — the net copies them from human
+    # games, so drop them unless the stone also builds White's own four or five.
+    wasted_blocks = 0
+    if next_color == 2:
+        p_probs = p_probs.copy()
+        fmap = get_forbidden_map(cb)
+        for flat in np.flatnonzero(fmap.reshape(-1) == 1):
+            idx = int(flat)
+            if idx >= NUM_BOARD_ACTIONS or p_probs[idx] <= 0.0:
+                continue
+            x, y = idx % 15, idx // 15
+            if _black_overline_point(cb, x, y) and _white_line_through(cb, x, y) < 4:
+                p_probs[idx] = 0.0
+                wasted_blocks += 1
+        total = float(p_probs.sum())
+        if total > 0.0:
+            p_probs /= total
+
     v_raw = v_logits[0].astype(np.float64)
     v_exp = np.exp(v_raw - float(np.max(v_raw)))
     v_probs = v_exp / float(np.sum(v_exp))
+
+    # Cheap tactical override so the net never misses an immediate five or a forced block.
+    def _five_points(color: int) -> List[int]:
+        pts: List[int] = []
+        for yy in range(15):
+            row = cb[yy]
+            for xx in range(15):
+                if row[xx] != 0:
+                    continue
+                t = cb.copy()
+                t[yy, xx] = color
+                if _is_five(t, xx, yy, color):
+                    pts.append(yy * 15 + xx)
+        return pts
+
+    tactic: Optional[str] = None
+    opp_color = 2 if next_color == 1 else 1
+    my_wins = _five_points(next_color)
+    if my_wins:
+        keep = np.zeros_like(p_probs)
+        keep[my_wins] = 1.0
+        p_probs = keep / keep.sum()
+        tactic = "win"
+    else:
+        opp_wins = [p for p in _five_points(opp_color) if legal[p]]
+        if opp_wins:
+            keep = np.zeros_like(p_probs)
+            keep[opp_wins] = 1.0
+            p_probs = keep / keep.sum()
+            tactic = "block"
 
     k = max(1, min(int(top_k), 20))
     top = np.argsort(-p_probs)[: k + 1]
@@ -323,6 +398,8 @@ def _run_predict(
         "tf_current_color": "black" if tf_cur == 1 else "white",
         "swap_available": bool(is_swap_allowed(move_idx)),
         "swap_prob": round(float(p_probs[SWAP_ACTION]), 6) if legal[SWAP_ACTION] else None,
+        "wasted_block_points_filtered": wasted_blocks,
+        "tactic": tactic,
         "tentative_first": {
             "id": tf_id,
             "name": state["players"][tf_id]["n"],
