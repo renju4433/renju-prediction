@@ -117,14 +117,20 @@ def main() -> None:
         action="store_true",
         help="skip the legacy (<2024-01-01) ablation fit",
     )
+    parser.add_argument(
+        "--all-rules",
+        action="store_true",
+        help="also train on gomoku rules (RIF category 2/3); default is renju only",
+    )
     args = parser.parse_args()
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     train_end = args.train_end
     valid_end = args.valid_end
 
-    print(f"Loading RIF database from {args.rif} ...")
-    rules, players, tournaments, games = load_rif(args.rif)
+    rules_scope = "all" if args.all_rules else "renju"
+    print(f"Loading RIF database from {args.rif} (rules scope: {rules_scope}) ...")
+    rules, players, tournaments, games = load_rif(args.rif, renju_only=not args.all_rules)
     max_date = max(g.date for g in games)
     print(
         f"Loaded {len(rules)} rules, {len(players)} players, {len(tournaments)} tournaments, "
@@ -273,6 +279,7 @@ def main() -> None:
         "metrics": {
             "rating_system": "glicko-1",
             "rif_snapshot": Path(args.rif).name,
+            "rules_scope": rules_scope,
             "best_c_per_day": best_c,
             "best_min_rd": best_min_rd,
             "best_params": best_params,

@@ -14,6 +14,10 @@ DEFAULT_RIF_PATH = os.environ.get(
     "RIF_PATH", r"c:\Users\yaolz\Downloads\renjunet_v10_20261120.rif"
 )
 
+# RIF <rule category="N">: 1 = renju, 2 = gomoku, 3 = mixed (gomoku + renju).
+# The models only ever learned renju, so gomoku rules/games are filtered out by default.
+RENJU_RULE_CATEGORY = "1"
+
 
 @dataclass(frozen=True)
 class GameRecord:
@@ -67,14 +71,29 @@ def infer_tentative_players(
 
 def load_rif(
     rif_path: str = DEFAULT_RIF_PATH,
+    renju_only: bool = True,
 ) -> Tuple[Dict[int, str], Dict[int, dict], Dict[int, dict], List[GameRecord]]:
-    """Parse RIF XML and return (rules, players, tournaments, chronologically_sorted_games)."""
+    """Parse RIF XML and return (rules, players, tournaments, chronologically_sorted_games).
+
+    With ``renju_only`` (default) only renju rules (RIF category 1) and their games are
+    kept; gomoku (category 2) and mixed gomoku+renju (category 3) rules are dropped, so
+    every downstream model is trained and served on renju data alone.
+    """
     tree = etree.parse(rif_path)
     root = tree.getroot()
 
-    rules: Dict[int, str] = {}
+    all_rules: Dict[int, str] = {}
+    rule_category: Dict[int, str] = {}
     for r in root.findall("./rules/rule"):
-        rules[int(r.attrib["id"])] = r.attrib["name"]
+        rid = int(r.attrib["id"])
+        all_rules[rid] = r.attrib["name"]
+        rule_category[rid] = (r.attrib.get("category") or "").strip()
+
+    rules: Dict[int, str] = {
+        rid: name
+        for rid, name in all_rules.items()
+        if (not renju_only) or rule_category.get(rid) == RENJU_RULE_CATEGORY
+    }
 
     players: Dict[int, dict] = {}
     for p in root.findall("./players/player"):
@@ -107,11 +126,13 @@ def load_rif(
     games: List[GameRecord] = []
     for g in root.findall("./games/game"):
         gid = int(g.attrib["id"])
+        rule_id = int(g.attrib["rule"])
+        if renju_only and rule_category.get(rule_id) != RENJU_RULE_CATEGORY:
+            continue
         tid = int(g.attrib["tournament"])
         t_info = tournaments[tid]
         date_str = t_info["start"]
         round_str = g.attrib.get("round", "")
-        rule_id = int(g.attrib["rule"])
         black_id = int(g.attrib["black"])
         white_id = int(g.attrib["white"])
         bresult = float(g.attrib["bresult"])
