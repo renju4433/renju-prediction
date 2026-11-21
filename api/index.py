@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -39,6 +40,19 @@ app = FastAPI(
     description="Strictly causal Glicko-1 + H2H + LightGBM & DualNet (Policy + Value) predictor",
     version="2.0.0",
 )
+
+# The static site (renjupgc.github.io) calls this API straight from the browser.
+# Without CORS it had to route every request through a third-party reader proxy,
+# which is what used to time out on mobile networks.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    max_age=86400,
+)
+
 
 _STATE: Optional[Dict[str, Any]] = None
 _ONNX_SESSION: Optional[ort.InferenceSession] = None
