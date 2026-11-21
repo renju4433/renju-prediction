@@ -1,4 +1,8 @@
-"""Export a lightweight, dependency-free gzipped JSON bundle for Vercel deployment."""
+"""Export the lightweight gzipped JSON bundle (ratings history + names + metrics).
+
+The LightGBM booster is no longer shipped: serving now uses the unified ONNX model,
+so this bundle only carries the causal Glicko/H2H history and lookup tables.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +21,6 @@ def main() -> None:
     with open(PKL_PATH, "rb") as f:
         bundle = pickle.load(f)
 
-    booster_dump = bundle["model"].booster_.dump_model()
     hist = bundle["history"]
 
     # Convert tuple keys (p1, p2) -> "p1,p2" for JSON serialization
@@ -39,12 +42,6 @@ def main() -> None:
     }
 
     payload = {
-        "booster": {
-            "num_class": booster_dump["num_class"],
-            "tree_info": booster_dump["tree_info"],
-            "feature_names": booster_dump["feature_names"],
-        },
-        "rule_categories": [int(x) for x in bundle["rule_categories"]],
         "rules": {str(k): v for k, v in bundle["rules"].items()},
         "players": compact_players,
         "history": {

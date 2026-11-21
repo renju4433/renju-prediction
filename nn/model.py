@@ -1,4 +1,9 @@
-"""Dual-head SE-ResNet (Policy + Value) with Player Identity Embeddings + FiLM modulation."""
+"""Unified SE-ResNet for Renju: one trunk, a 226-way policy (board + swap) and a 3-way value.
+
+Player identity is injected twice:
+  * as FiLM modulation of the convolutional trunk (tentative-first / tentative-second embeddings)
+  * straight into the swap and value heads
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nn.features import NUM_INPUT_PLANES
+from nn.features import NUM_BOARD_ACTIONS, NUM_INPUT_PLANES
 
 
 class SEBlock(nn.Module):
@@ -40,7 +45,9 @@ class ResBlock(nn.Module):
         return F.relu(x + out, inplace=True)
 
 
-class RenjuDualNet(nn.Module):
+class RenjuUnifiedNet(nn.Module):
+    """Policy over 225 board points + swap, and P(tf_win, draw, ts_win)."""
+
     def __init__(
         self,
         in_channels: int = NUM_INPUT_PLANES,
@@ -60,15 +67,17 @@ class RenjuDualNet(nn.Module):
         )
         self.trunk = nn.Sequential(*[ResBlock(channels) for _ in range(num_blocks)])
 
-        # Player identity embedding + FiLM conditioning for Policy & Value heads
-        self.player_emb = nn.Embedding(player_vocab_size, player_emb_dim)
+        self.tf_emb = nn.Embedding(player_vocab_size, player_emb_dim)
+        self.ts_emb = nn.Embedding(player_vocab_size, player_emb_dim)
+
+        # FiLM: trunk conditioning on both players
         self.film_mlp = nn.Sequential(
             nn.Linear(player_emb_dim * 2, channels),
             nn.ReLU(inplace=True),
             nn.Linear(channels, channels * 2),
         )
 
-        # Policy head: (B, channels, 15, 15) -> (B, 225)
+        # Board policy head: (B, C, 15, 15) -> (B, 225)
         self.policy_conv = nn.Sequential(
             nn.Conv2d(channels, 16, 1, bias=False),
             nn.BatchNorm2d(16),
@@ -76,7 +85,14 @@ class RenjuDualNet(nn.Module):
             nn.Conv2d(16, 1, 1, bias=True),
         )
 
-        # Value head: (B, channels, 15, 15) -> [tf_win, draw, ts_win] logits
+        # Swap head: pooled features + player identity -> 1 logit
+        self.swap_head = nn.Sequential(
+            nn.Linear(channels * 2 + player_emb_dim * 2, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 1),
+        )
+
+        # Value head: P(tf_win), P(draw), P(ts_win)
         self.value_conv = nn.Sequential(
             nn.Conv2d(channels, 32, 1, bias=False),
             nn.BatchNorm2d(32),
@@ -91,27 +107,26 @@ class RenjuDualNet(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        mover_id: torch.Tensor,
-        opp_id: torch.Tensor,
+        tf_id: torch.Tensor,
+        ts_id: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.trunk(self.stem(x))
 
-        m_emb = self.player_emb(mover_id)
-        o_emb = self.player_emb(opp_id)
-        p_feat = torch.cat([m_emb, o_emb], dim=1)  # (B, 2 * player_emb_dim)
+        tf_e = self.tf_emb(tf_id)
+        ts_e = self.ts_emb(ts_id)
+        p_feat = torch.cat([tf_e, ts_e], dim=1)
 
-        # FiLM modulation: h_mod = h * (1 + gamma) + beta
         gamma_beta = self.film_mlp(p_feat)
         gamma, beta = gamma_beta.chunk(2, dim=1)
-        h_mod = h * (1.0 + gamma.unsqueeze(-1).unsqueeze(-1)) + beta.unsqueeze(-1).unsqueeze(-1)
+        h = h * (1.0 + gamma.unsqueeze(-1).unsqueeze(-1)) + beta.unsqueeze(-1).unsqueeze(-1)
 
-        # Policy logits (B, 225)
-        p = self.policy_conv(h_mod).flatten(1)
+        board_logits = self.policy_conv(h).flatten(1)[:, :NUM_BOARD_ACTIONS]
 
-        # Value logits (B, 3)
-        v = self.value_conv(h_mod)
-        v_avg = v.mean(dim=(2, 3))
-        v_max = v.amax(dim=(2, 3))
-        v_cat = torch.cat([v_avg, v_max, p_feat], dim=1)
-        v_logits = self.value_fc(v_cat)
-        return p, v_logits
+        pooled = torch.cat([h.mean(dim=(2, 3)), h.amax(dim=(2, 3))], dim=1)
+        swap_logit = self.swap_head(torch.cat([pooled, p_feat], dim=1))
+        policy_logits = torch.cat([board_logits, swap_logit], dim=1)
+
+        v = self.value_conv(h)
+        v_cat = torch.cat([v.mean(dim=(2, 3)), v.amax(dim=(2, 3)), p_feat], dim=1)
+        value_logits = self.value_fc(v_cat)
+        return policy_logits, value_logits
